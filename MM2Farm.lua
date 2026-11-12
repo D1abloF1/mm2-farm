@@ -29,10 +29,11 @@ local Http = game:GetService("HttpService")
 local lp = Players.LocalPlayer
 local CONFIG_PATH = "MM2FarmConfig.json"
 local VERSION = "1.4"
+local UPDATE_URL = "https://raw.githubusercontent.com/D1abloF1/mm2-farm/main/MM2Farm.lua"
 local DEFAULTS = {
 	farm = true,
 	mode = "fly",       -- fly | walk | tp  (tp ловит античит - только на свой риск)
-	flySpeed = 180,     -- studs/сек в полёте
+	flySpeed = 130,     -- studs/сек в полёте (180 кикнуло античитом)
 	walkSpeed = 55,     -- studs/сек в наземном режиме
 	humanize = true,
 	scanDelay = 0.35,
@@ -98,6 +99,7 @@ local state = {
 	roundTime = "—",
 	players = 0,
 	pickups = 0,
+	pickupSeq = 0,
 	balanceDelta = 0,
 	baseBalance = nil,
 	coinsOnMap = 0,
@@ -110,6 +112,7 @@ local state = {
 	soloSince = nil,
 	inRound = false,
 	lastCoinAt = os.clock(),
+	lastStepAt = os.clock(),
 	passTier = 0,
 	passMax = 30,
 	passCost = 600,
@@ -168,6 +171,16 @@ local function isPickup(d)
 	return (n:find("Coin") or n:find("Candy") or n:find("Egg")
 		or n:find("BeachBall") or n:find("SnowToken")) ~= nil
 end
+-- собранная монета остаётся пустышкой (нет TouchInterest) - такие пропускаем.
+local function isActivePickup(d)
+	if not d or not d.Parent then return false end
+	if d.Name == "Coin_Server" then
+		if not d:FindFirstChild("TouchInterest") and not d:FindFirstChildWhichIsA("TouchTransmitter") then return false end
+		local vis = d:FindFirstChild("CoinVisual")
+		if vis and vis:IsA("BasePart") and vis.Transparency > 0.9 then return false end
+	end
+	return true
+end
 local mapCache, coinBox, mapCheckedAt = nil, nil, 0
 local function findMap()
 	if coinBox and coinBox.Parent then return mapCache end
@@ -200,7 +213,7 @@ local function collectPickups(origin)
 	local best, bestDist, count = nil, math.huge, 0
 	local src = coinBox and coinBox:GetDescendants() or workspace:GetDescendants()
 	for _, d in ipairs(src) do
-		if d.Parent and isPickup(d) then
+		if d.Parent and isPickup(d) and isActivePickup(d) then
 			count += 1
 			if skipCoins[d] and os.clock() - skipCoins[d] > 6 then
 				skipCoins[d] = nil
@@ -220,6 +233,7 @@ end
 -- 4. счётчики
 track(RS.Remotes.Gameplay.CoinCollected.OnClientEvent:Connect(function(kind)
 	state.pickups += 1
+	state.pickupSeq += 1
 	state.lastCoinAt = os.clock()
 end))
 local function refreshProfileInner()
@@ -252,7 +266,6 @@ local function refreshProfileInner()
 		if state.baseBalance == nil then state.baseBalance = acc[key] end
 		state.balanceDelta = math.max(0, (acc[key] or 0) - (state.baseBalance or 0))
 	end
-	-- пасс: тир и забранные награды (профиль авторитетнее GUI)
 	local hall = data.Halloween2026
 	if type(hall) == "table" then
 		local t = tonumber(hall.CurrentTier)
@@ -275,7 +288,6 @@ local function refreshProfile()
 	state.profileBusy = false
 	if not ok then log("профиль: ошибка %s", tostring(err)) end
 end
--- 4.1 пасс: авто-покупка тиров, авто-сбор наград, закрытие попапа
 local function passRemote(name)
 	local remotes = RS:FindFirstChild("Remotes")
 	local events = remotes and remotes:FindFirstChild("Events")
@@ -319,7 +331,6 @@ local function readPassUi()
 		end
 	end
 end
--- окно "New Item -> Claim": жмём Claim и, если не закрылось, скрываем
 local function closeItemPopup()
 	if not cfg.autoClosePopup then return end
 	local pg = lp:FindFirstChild("PlayerGui")
@@ -361,7 +372,6 @@ local function passTick()
 	local cost = tonumber(state.passCost) or tonumber(cfg.passTierCost) or 0
 	local candies = candiesOf(0)
 	state.passAffordable = (cost > 0) and math.floor(candies / cost) or 0
-	-- 1. сбор наград пасса
 	if cfg.autoClaimPass and tier > 0 then
 		local claimed = state.passClaimed or {}
 		local got = 0
@@ -387,7 +397,6 @@ local function passTick()
 		end
 		state.passClaimed = claimed
 	end
-	-- 2. покупка следующего тира за конфеты
 	if cfg.autoBuyPass and cost > 0 and tier >= 1 and tier < maxTier and candies >= cost then
 		if os.clock() - (state.passLastBuyAt or 0) >= 4 then
 			state.passLastBuyAt = os.clock()
@@ -406,7 +415,6 @@ local function passTick()
 		end
 	end
 end
--- окно "New Item -> Claim" закрываем постоянно, а не один раз
 task.spawn(function()
 	while alive() do
 		pcall(closeItemPopup)
@@ -433,15 +441,13 @@ local function goalFor(coin, hrp)
 end
 local function waitCollected(coin, timeout)
 	local waited = 0
-	while coin.Parent and waited < timeout do
+	while coin.Parent and isActivePickup(coin) and waited < timeout do
 		task.wait(0.01)
 		waited += 0.01
 	end
-	return coin.Parent == nil
+	return coin.Parent == nil or not isActivePickup(coin)
 end
--- ПЛАВНЫЙ ПОЛЁТ: CFrame-шаги по кадрам.
--- CFrame двигает персонажа напрямую, поэтому стены и коллизии его не держат.
--- Шаг за кадр маленький (скорость * dt) - это не телепорт, античит не кикает.
+-- ПЛАВНЫЙ ПОЛЁТ: маленькие CFrame-шаги за кадр, без телепортов.
 local noClipParts = {}
 local function setNoClip(on, hrp)
 	local char = hrp and hrp.Parent
@@ -463,25 +469,24 @@ end
 local function flyTo(coin, goal)
 	local hrp = humanoidRoot()
 	if not hrp then return false end
-	-- на старте раунда ждём пол под ногами, иначе noclip уронит в пустоту
 	local fhit = hasFloor(hrp.Position, hrp)
 	if (not fhit or (hrp.Position.Y - fhit.Position.Y) > 30) and hrp.AssemblyLinearVelocity.Y < -20 then task.wait(0.8) end
 	hrp = humanoidRoot()
 	if not hrp then return false end
-	-- отключаем физику гуманоида, иначе он тянет вниз и мешает CFrame
 	local char = hrp.Parent
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if hum then
 		pcall(function() hum.PlatformStand = true end)
 		pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
 	end
-	-- игра может вернуть CanCollide после смены состояния - ставим ещё раз
 	setNoClip(true, hrp)
 	pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+	local seq0 = state.pickupSeq
 	local deadline = os.clock() + 15
 	while alive() and coin.Parent and os.clock() < deadline do
 		local dt = RunService.Heartbeat:Wait()
 		dt = math.clamp(dt, 0.001, 0.05)
+		if not isActivePickup(coin) then break end
 		local h = humanoidRoot()
 		if not h then break end
 		if h.Parent ~= char then
@@ -492,9 +497,7 @@ local function flyTo(coin, goal)
 				pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
 			end
 		end
-		-- держим noclip и Physics каждый кадр: MM2 умеет возвращать коллизии
 		setNoClip(true, h)
-		if h.Position.Y < goal.Y - 80 then pcall(function() h.CFrame = CFrame.new(goal) end) break end
 		if hum and hum:GetState() ~= Enum.HumanoidStateType.Physics then
 			pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
 		end
@@ -502,24 +505,20 @@ local function flyTo(coin, goal)
 		local delta = goal - pos
 		local dist = delta.Magnitude
 		if dist < 2 then break end
-		-- строго по прямой к монете, без подстройки под пол/крышу
 		local speed = math.min(cfg.flySpeed, math.max(18, dist * 4))
-		local step = math.min(dist, speed * dt)
+		local step = math.min(dist, speed * dt, 6)
 		pcall(function() h.CFrame = CFrame.new(pos + delta.Unit * step) end)
 		pcall(function() h.AssemblyLinearVelocity = Vector3.zero end)
 	end
-	-- финальная доводка + удержание: без коллизий персонаж иначе падает сквозь пол
-	-- и монета не успевает засчитаться
-	local guard = 0
-	local held = 0
-	while alive() and coin.Parent and held < 0.7 do
+	local guard, held = 0, 0
+	while alive() and coin.Parent and isActivePickup(coin) and state.pickupSeq == seq0 and held < 0.8 do
 		local h = humanoidRoot()
 		if not h then break end
 		setNoClip(true, h)
 		local delta = goal - h.Position
 		if delta.Magnitude > 0.6 then
 			local dt = RunService.Heartbeat:Wait()
-			local step = math.min(delta.Magnitude, math.max(6, math.min(delta.Magnitude * 8, cfg.flySpeed)) * math.clamp(dt, 0.001, 0.05))
+			local step = math.min(delta.Magnitude, math.max(6, math.min(delta.Magnitude * 8, cfg.flySpeed)) * math.clamp(dt, 0.001, 0.05), 6)
 			pcall(function() h.CFrame = CFrame.new(h.Position + delta.Unit * step) end)
 		else
 			pcall(function() h.CFrame = CFrame.new(goal) end)
@@ -530,15 +529,14 @@ local function flyTo(coin, goal)
 		guard += 1
 		if guard > 400 then break end
 	end
-	waitCollected(coin, 0.15)
+	waitCollected(coin, 0.1)
 	if hum then
 		pcall(function() hum.PlatformStand = false end)
 		pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
 	end
 	setNoClip(false, humanoidRoot())
-	return coin.Parent == nil
+	return coin.Parent == nil or not isActivePickup(coin) or state.pickupSeq ~= seq0
 end
--- наземный режим: обычная ходьба ускоренным шагом (самый "легальный" для сервера)
 local function walkTo(coin, goal)
 	local hrp = humanoidRoot()
 	if not hrp then return false end
@@ -569,9 +567,8 @@ local function walkTo(coin, goal)
 	local h = humanoidRoot()
 	if h then pcall(function() h.AssemblyLinearVelocity = Vector3.new(0, h.AssemblyLinearVelocity.Y, 0) end) end
 	waitCollected(coin, 0.4)
-	return coin.Parent == nil
+	return coin.Parent == nil or not isActivePickup(coin)
 end
--- один шаг сбора: возвращает паузу перед следующим шагом
 local function collectStep()
 	if not cfg.farm then return 0.15 end
 	local hrp = humanoidRoot()
@@ -587,7 +584,6 @@ local function collectStep()
 		state.status = "ждём раунд"
 		return cfg.scanDelay
 	end
-	-- в лобби карта тоже лежит в workspace, но монеты далеко: это не раунд
 	if (coin.Position - hrp.Position).Magnitude > 400 then
 		state.inRound = false
 		state.status = "ждём раунд"
@@ -612,6 +608,7 @@ end
 task.spawn(function()
 	while alive() do
 		local ok, res = pcall(collectStep)
+		state.lastStepAt = os.clock()
 		if ok then
 			if type(res) == "number" and res > 0 then task.wait(res) end
 			state.errorText = ""
@@ -636,11 +633,7 @@ local function cycleMode()
 	end
 	log("режим: %s", MODE_TITLE[cfg.mode] or cfg.mode)
 end
--- 6. анти-АФК (механизмы из ZaLupa Hub)
---   1) глушим обработчики LocalPlayer.Idled (getconnections -> Disable/Disconnect)
---   2) VirtualUser: CaptureController + ClickButton2 (имитация правого клика)
---   3) VirtualInputManager: нажатие/отпускание ЛКМ
---   4) импульс раз в 60с и по событию Idled; всё в pcall (набор API зависит от экзекутора)
+-- 6. анти-АФК по схеме ZaLupa Hub: Idled + VirtualUser + VirtualInputManager
 local ourIdled
 local function killIdled()
 	local ok, conns = pcall(getconnections, lp.Idled)
@@ -666,7 +659,6 @@ local function killIdled()
 	return killed
 end
 local function antiAfkPulse()
-	-- не чаще раза в 5с: Idled может срабатывать пачками
 	if state.afkLast and os.clock() - state.afkLast < 5 then return false end
 	state.afkLast = os.clock()
 	pcall(killIdled)
@@ -684,7 +676,6 @@ local function antiAfkPulse()
 		local vim = game:GetService("VirtualInputManager")
 		vim:SendMouseButtonEvent(0, 0, 0, false, game, 0)
 	end)
-	-- плюс маленький шаг персонажем: серверу видно реальное движение
 	pcall(function()
 		local h = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
 		if h and h.Health > 0 then h.Jump = true end
@@ -708,7 +699,6 @@ task.spawn(function()
 		end
 	end
 end)
--- 7. реджойн
 local function hop()
 	state.hops += 1
 	log("реджойн #%d (игроков: %d)", state.hops, state.players)
@@ -738,6 +728,33 @@ task.spawn(function()
 			end
 		end
 		task.wait(2)
+	end
+end)
+-- 7.1 авто-реконнект после кика и самовосстановление при зависании
+local rejoinTries, goneAt = 0, nil
+local function tryRejoin(reason)
+	if rejoinTries >= 20 then return end
+	rejoinTries += 1
+	log("реконнект #%d (%s)", rejoinTries, tostring(reason))
+	pcall(function() TS:Teleport(game.PlaceId) end)
+end
+pcall(function()
+	game:GetService("GuiService").ErrorMessageChanged:Connect(function()
+		local ok, m = pcall(function() return game:GetService("GuiService"):GetErrorMessage() end); m = ok and tostring(m):lower() or ""
+		if m:find("kick") or m:find("disconnect") or m:find("connection") then task.delay(1, tryRejoin, "ошибка Roblox") end
+	end)
+end)
+task.spawn(function()
+	while alive() do
+		task.wait(3)
+		if not lp.Parent or not Players.LocalPlayer then
+			goneAt = goneAt or os.clock()
+			if os.clock() - goneAt > 5 then tryRejoin("дисконнект") end
+		else goneAt = nil end
+		if cfg.farm and os.clock() - state.lastStepAt > 30 then
+			state.lastStepAt = os.clock(); log("фарм завис: перезапуск скрипта")
+			local ok, err = pcall(function() loadstring(game:HttpGet(UPDATE_URL .. "?v=" .. os.time()))() end); if not ok then log("перезапуск не удался: %s", tostring(err)) end
+		end
 	end
 end)
 -- 8. профиль и таймер
