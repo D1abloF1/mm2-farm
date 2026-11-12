@@ -458,7 +458,11 @@ end
 local function flyTo(coin, goal)
 	local hrp = humanoidRoot()
 	if not hrp then return false end
-	setNoClip(true, hrp)
+	-- на старте раунда ждём пол под ногами, иначе noclip уронит в пустоту
+	local fhit = hasFloor(hrp.Position, hrp)
+	if not fhit or (hrp.Position.Y - fhit.Position.Y) > 30 then task.wait(0.8) end
+	hrp = humanoidRoot()
+	if not hrp then return false end
 	-- отключаем физику гуманоида, иначе он тянет вниз и мешает CFrame
 	local char = hrp.Parent
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -489,6 +493,7 @@ local function flyTo(coin, goal)
 		end
 		-- держим noclip и Physics каждый кадр: MM2 умеет возвращать коллизии
 		setNoClip(true, h)
+		if h.Position.Y < goal.Y - 80 then pcall(function() h.CFrame = CFrame.new(goal) end) break end
 		if hum and hum:GetState() ~= Enum.HumanoidStateType.Physics then
 			pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
 		end
