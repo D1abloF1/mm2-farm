@@ -433,9 +433,9 @@ local function goalFor(coin, hrp)
 	if not hasFloor(base, hrp) then
 		return nil -- под монетой пустота: не летим туда
 	end
-	local goal = Vector3.new(base.X, base.Y + 3.2, base.Z)
+	local goal = Vector3.new(base.X, base.Y + 2.6, base.Z)
 	if cfg.humanize then
-		goal = goal + Vector3.new(math.random(-5, 5) / 10, 0, math.random(-5, 5) / 10)
+		goal = goal + Vector3.new(math.random(-3, 3) / 10, 0, math.random(-3, 3) / 10)
 	end
 	return goal
 end
@@ -753,7 +753,7 @@ task.spawn(function()
 		else goneAt = nil end
 		if cfg.farm and os.clock() - state.lastStepAt > 30 then
 			state.lastStepAt = os.clock(); log("фарм завис: перезапуск скрипта")
-			local ok, err = pcall(function() loadstring(game:HttpGet(UPDATE_URL .. "?v=" .. os.time()))() end); if not ok then log("перезапуск не удался: %s", tostring(err)) end
+			local ok, err = pcall(function() assert(loadstring(game:HttpGet(UPDATE_URL .. "?v=" .. os.time())))() end); if not ok then log("перезапуск не удался: %s", tostring(err)) end
 		end
 	end
 end)
