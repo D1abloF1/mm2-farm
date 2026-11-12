@@ -468,6 +468,7 @@ local function flyTo(coin, goal)
 	end
 	-- игра может вернуть CanCollide после смены состояния - ставим ещё раз
 	setNoClip(true, hrp)
+	pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
 	local deadline = os.clock() + 15
 	local lastPos = hrp.Position
 	local stuck = 0
@@ -505,6 +506,7 @@ local function flyTo(coin, goal)
 		local step = math.min(dist, speed * dt)
 		local nextPos = pos + delta.Unit * step
 		pcall(function() h.CFrame = CFrame.new(nextPos) end)
+		pcall(function() h.AssemblyLinearVelocity = Vector3.zero end)
 		-- анти-застревание: не двигается - поднимаемся выше
 		if (h.Position - lastPos).Magnitude < 0.05 then
 			stuck += 1
@@ -535,6 +537,7 @@ local function flyTo(coin, goal)
 			task.wait(0.03)
 			held += 0.03
 		end
+		pcall(function() h.AssemblyLinearVelocity = Vector3.zero end)
 		guard += 1
 		if guard > 400 then break end
 	end
