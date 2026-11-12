@@ -474,10 +474,6 @@ local function flyTo(coin, goal)
 	setNoClip(true, hrp)
 	pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
 	local deadline = os.clock() + 15
-	local lastPos = hrp.Position
-	local stuck = 0
-	local lastCheck = 0
-	local hoverY = goal.Y
 	while alive() and coin.Parent and os.clock() < deadline do
 		local dt = RunService.Heartbeat:Wait()
 		dt = math.clamp(dt, 0.001, 0.05)
@@ -498,31 +494,14 @@ local function flyTo(coin, goal)
 			pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
 		end
 		local pos = h.Position
-		local delta = Vector3.new(goal.X - pos.X, hoverY - pos.Y, goal.Z - pos.Z)
+		local delta = goal - pos
 		local dist = delta.Magnitude
 		if dist < 2 then break end
-		-- держим высоту по полу: не проваливаемся в текстуры и не улетаем вверх
-		if os.clock() - lastCheck > 0.3 then
-			lastCheck = os.clock()
-			local hit = hasFloor(pos, h)
-			if hit then hoverY = math.max(goal.Y, hit.Position.Y + 3.2) end
-		end
+		-- строго по прямой к монете, без подстройки под пол/крышу
 		local speed = math.min(cfg.flySpeed, math.max(18, dist * 4))
 		local step = math.min(dist, speed * dt)
-		local nextPos = pos + delta.Unit * step
-		pcall(function() h.CFrame = CFrame.new(nextPos) end)
+		pcall(function() h.CFrame = CFrame.new(pos + delta.Unit * step) end)
 		pcall(function() h.AssemblyLinearVelocity = Vector3.zero end)
-		-- анти-застревание: не двигается - поднимаемся выше
-		if (h.Position - lastPos).Magnitude < 0.05 then
-			stuck += 1
-			if stuck >= 20 then
-				hoverY += 3
-				stuck = 0
-			end
-		else
-			stuck = 0
-		end
-		lastPos = h.Position
 	end
 	-- финальная доводка + удержание: без коллизий персонаж иначе падает сквозь пол
 	-- и монета не успевает засчитаться
