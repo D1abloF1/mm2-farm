@@ -459,40 +459,52 @@ local function flyTo(coin, goal)
 	local hrp = humanoidRoot()
 	if not hrp then return false end
 	setNoClip(true, hrp)
-
 	-- отключаем физику гуманоида, иначе он тянет вниз и мешает CFrame
-	local hum = hrp.Parent and hrp.Parent:FindFirstChildOfClass("Humanoid")
-	if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end) end
-
+	local char = hrp.Parent
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		pcall(function() hum.PlatformStand = true end)
+		pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+	end
+	-- игра может вернуть CanCollide после смены состояния - ставим ещё раз
+	setNoClip(true, hrp)
 	local deadline = os.clock() + 15
 	local lastPos = hrp.Position
 	local stuck = 0
 	local lastCheck = 0
 	local hoverY = goal.Y
-
 	while alive() and coin.Parent and os.clock() < deadline do
 		local dt = RunService.Heartbeat:Wait()
 		dt = math.clamp(dt, 0.001, 0.05)
-
 		local h = humanoidRoot()
 		if not h then break end
+		if h.Parent ~= char then
+			char = h.Parent
+			hum = char and char:FindFirstChildOfClass("Humanoid")
+			if hum then
+				pcall(function() hum.PlatformStand = true end)
+				pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+			end
+		end
+		-- держим noclip и Physics каждый кадр: MM2 умеет возвращать коллизии
+		setNoClip(true, h)
+		if hum and hum:GetState() ~= Enum.HumanoidStateType.Physics then
+			pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+		end
 		local pos = h.Position
 		local delta = Vector3.new(goal.X - pos.X, hoverY - pos.Y, goal.Z - pos.Z)
 		local dist = delta.Magnitude
 		if dist < 2 then break end
-
 		-- держим высоту по полу: не проваливаемся в текстуры и не улетаем вверх
 		if os.clock() - lastCheck > 0.3 then
 			lastCheck = os.clock()
 			local hit = hasFloor(pos, h)
 			if hit then hoverY = math.max(goal.Y, hit.Position.Y + 3.2) end
 		end
-
 		local speed = math.min(cfg.flySpeed, math.max(18, dist * 4))
 		local step = math.min(dist, speed * dt)
 		local nextPos = pos + delta.Unit * step
 		pcall(function() h.CFrame = CFrame.new(nextPos) end)
-
 		-- анти-застревание: не двигается - поднимаемся выше
 		if (h.Position - lastPos).Magnitude < 0.05 then
 			stuck += 1
@@ -505,7 +517,6 @@ local function flyTo(coin, goal)
 		end
 		lastPos = h.Position
 	end
-
 	-- финальная доводка + удержание: без коллизий персонаж иначе падает сквозь пол
 	-- и монета не успевает засчитаться
 	local guard = 0
@@ -513,6 +524,7 @@ local function flyTo(coin, goal)
 	while alive() and coin.Parent and held < 0.7 do
 		local h = humanoidRoot()
 		if not h then break end
+		setNoClip(true, h)
 		local delta = goal - h.Position
 		if delta.Magnitude > 0.6 then
 			local dt = RunService.Heartbeat:Wait()
@@ -526,10 +538,11 @@ local function flyTo(coin, goal)
 		guard += 1
 		if guard > 400 then break end
 	end
-
 	waitCollected(coin, 0.15)
-
-	if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end) end
+	if hum then
+		pcall(function() hum.PlatformStand = false end)
+		pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+	end
 	setNoClip(false, humanoidRoot())
 	return coin.Parent == nil
 end
@@ -582,7 +595,6 @@ local function collectStep()
 		state.status = "ждём раунд"
 		return cfg.scanDelay
 	end
-
 	-- в лобби карта тоже лежит в workspace, но монеты далеко: это не раунд
 	if (coin.Position - hrp.Position).Magnitude > 400 then
 		state.inRound = false
@@ -638,7 +650,6 @@ end
 --   3) VirtualInputManager: нажатие/отпускание ЛКМ
 --   4) импульс раз в 60с и по событию Idled; всё в pcall (набор API зависит от экзекутора)
 local ourIdled
-
 local function killIdled()
 	local ok, conns = pcall(getconnections, lp.Idled)
 	if not ok or type(conns) ~= "table" then return 0 end
@@ -662,20 +673,16 @@ local function killIdled()
 	end
 	return killed
 end
-
 local function antiAfkPulse()
 	-- не чаще раза в 5с: Idled может срабатывать пачками
 	if state.afkLast and os.clock() - state.afkLast < 5 then return false end
 	state.afkLast = os.clock()
-
 	pcall(killIdled)
-
 	pcall(function()
 		local vu = game:GetService("VirtualUser")
 		vu:CaptureController()
 		vu:ClickButton2(Vector2.zero, workspace.CurrentCamera.CFrame)
 	end)
-
 	pcall(function()
 		local vim = game:GetService("VirtualInputManager")
 		vim:SendMouseButtonEvent(0, 0, 0, true, game, 0)
@@ -685,22 +692,18 @@ local function antiAfkPulse()
 		local vim = game:GetService("VirtualInputManager")
 		vim:SendMouseButtonEvent(0, 0, 0, false, game, 0)
 	end)
-
 	-- плюс маленький шаг персонажем: серверу видно реальное движение
 	pcall(function()
 		local h = lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
 		if h and h.Health > 0 then h.Jump = true end
 	end)
-
 	state.afkPulses += 1
 	return true
 end
-
 ourIdled = function()
 	if cfg.antiAfk then pcall(antiAfkPulse) end
 end
 track(lp.Idled:Connect(ourIdled))
-
 task.spawn(function()
 	pcall(killIdled)
 	pcall(antiAfkPulse)
@@ -977,7 +980,7 @@ local function stop(reason)
 		state.passTier, state.passMax, state.passBuys, state.passClaims)
 end
 _G.MM2FarmStop = function() stop("manual") end
-_G.__MM2Farm = { version = VERSION, generation = GENERATION, state = state, stop = stop }
+_G.__MM2Farm = { version = VERSION, generation = GENERATION, state = state, cfg = cfg, stop = stop }
 log("v%s | старый экземпляр снят | карта %s | игроков %d", VERSION, state.map, #Players:GetPlayers())
 task.spawn(function()
 	task.wait(2)
