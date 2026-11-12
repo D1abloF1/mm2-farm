@@ -32,7 +32,7 @@ local VERSION = "1.4"
 local DEFAULTS = {
 	farm = true,
 	mode = "fly",       -- fly | walk | tp  (tp ловит античит - только на свой риск)
-	flySpeed = 130,     -- studs/сек в полёте
+	flySpeed = 180,     -- studs/сек в полёте
 	walkSpeed = 55,     -- studs/сек в наземном режиме
 	humanize = true,
 	scanDelay = 0.35,
@@ -168,12 +168,22 @@ local function isPickup(d)
 	return (n:find("Coin") or n:find("Candy") or n:find("Egg")
 		or n:find("BeachBall") or n:find("SnowToken")) ~= nil
 end
+local mapCache, coinBox, mapCheckedAt = nil, nil, 0
 local function findMap()
+	if coinBox and coinBox.Parent then return mapCache end
+	if os.clock() - mapCheckedAt < 0.5 then return mapCache end
+	mapCheckedAt = os.clock()
+	mapCache, coinBox = nil, nil
 	for _, m in ipairs(workspace:GetChildren()) do
-		if m:IsA("Model") and m.Name ~= "Lobby" and m:FindFirstChild("CoinContainer", true) then
-			return m
+		if m:IsA("Model") and m.Name ~= "Lobby" then
+			local cc = m:FindFirstChild("CoinContainer", true)
+			if cc then
+				mapCache, coinBox = m, cc
+				break
+			end
 		end
 	end
+	return mapCache
 end
 local skipCoins = {}
 local function shouldSkip(coin)
@@ -186,28 +196,23 @@ local function shouldSkip(coin)
 	return true
 end
 local function collectPickups(origin)
-	local list = {}
-	local count = 0
-	local dead = 0
-	for _, d in ipairs(workspace:GetDescendants()) do
+	if not coinBox or not coinBox.Parent then findMap() end
+	local best, bestDist, count = nil, math.huge, 0
+	local src = coinBox and coinBox:GetDescendants() or workspace:GetDescendants()
+	for _, d in ipairs(src) do
 		if d.Parent and isPickup(d) then
 			count += 1
-			list[#list + 1] = d
 			if skipCoins[d] and os.clock() - skipCoins[d] > 6 then
 				skipCoins[d] = nil
-				dead += 1
+			end
+			if origin and not shouldSkip(d) then
+				local q = (d.Position - origin).Magnitude
+				if q < bestDist then bestDist, best = q, d end
 			end
 		end
 	end
 	state.coinsOnMap = count
-	if not origin then return nil end
-	table.sort(list, function(a, b)
-		return (a.Position - origin).Magnitude < (b.Position - origin).Magnitude
-	end)
-	for _, c in ipairs(list) do
-		if not shouldSkip(c) then return c end
-	end
-	return nil
+	return best
 end
 local function skipCoin(coin)
 	skipCoins[coin] = os.clock()
@@ -460,7 +465,7 @@ local function flyTo(coin, goal)
 	if not hrp then return false end
 	-- на старте раунда ждём пол под ногами, иначе noclip уронит в пустоту
 	local fhit = hasFloor(hrp.Position, hrp)
-	if not fhit or (hrp.Position.Y - fhit.Position.Y) > 30 then task.wait(0.8) end
+	if (not fhit or (hrp.Position.Y - fhit.Position.Y) > 30) and hrp.AssemblyLinearVelocity.Y < -20 then task.wait(0.8) end
 	hrp = humanoidRoot()
 	if not hrp then return false end
 	-- отключаем физику гуманоида, иначе он тянет вниз и мешает CFrame
